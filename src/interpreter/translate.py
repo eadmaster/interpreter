@@ -18,7 +18,7 @@ os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 SUGOI_REPO_ID = "entai2965/sugoi-v4-ja-en-ctranslate2"
 
 # Translation cache defaults
-DEFAULT_CACHE_SIZE = 200            # Max cached translations
+DEFAULT_CACHE_SIZE = 10000            # Max cached translations
 DEFAULT_SIMILARITY_THRESHOLD = 0.9  # Fuzzy match threshold for cache lookup
 
 
@@ -61,6 +61,7 @@ class TranslationCache:
         self,
         max_size: int = DEFAULT_CACHE_SIZE,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        cache_file: str = None
     ):
         """Initialize the cache.
 
@@ -71,6 +72,21 @@ class TranslationCache:
         self._cache: dict[str, str] = {}
         self._max_size = max_size
         self._similarity_threshold = similarity_threshold
+        
+        if cache_file:
+            # load cache entries from the passed file
+            import csv
+            with open(cache_file, 'r') as csv_file:
+                logger.info("loading translation cache from " + cache_file)
+                csv_sniffer = csv.Sniffer().sniff(csv_file.read(1024))
+                csv_file.seek(0)
+                csv_file_reader = csv.reader(csv_file, dialect=csv_sniffer)
+                for curr_row in csv_file_reader:
+                    #logger.debug(curr_row[0])
+                    #logger.debug(curr_row[1])
+                    self.put(curr_row[0], curr_row[1])
+                # end for
+                logger.info("loaded %d entries in translation cache" % (len(self._cache)))
 
     def get(self, text: str) -> str | None:
         """Get cached translation, using fuzzy matching if exact match not found.
@@ -89,6 +105,8 @@ class TranslationCache:
         for cached_text, translation in self._cache.items():
             if text_similarity(text, cached_text) >= self._similarity_threshold:
                 return translation
+            #if text in cached_text:  # is a substring
+            #    return translation
 
         return None
 
@@ -114,6 +132,7 @@ class Translator:
         self,
         cache_size: int = DEFAULT_CACHE_SIZE,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        cache_file: str = None,
     ):
         """Initialize the translator (lazy loading).
 
@@ -124,7 +143,7 @@ class Translator:
         self._model_path = None
         self._translator = None
         self._tokenizer = None
-        self._cache = TranslationCache(cache_size, similarity_threshold)
+        self._cache = TranslationCache(cache_size, similarity_threshold, cache_file)
 
     def load(self) -> None:
         """Load the translation model, downloading if needed."""
@@ -168,6 +187,14 @@ class Translator:
         device_info = "GPU" if device == "cuda" else "CPU"
         logger.info("sugoi v4 ready", device=device_info)
 
+    
+    def _strip_ascii_chars(self, text: str) -> str:
+        non_ascii_pattern = r'[^\x00-\x7F]+'
+        import re
+        matches = re.findall(non_ascii_pattern, text)
+        return "".join(matches)
+        
+        
     def translate(self, text: str) -> tuple[str, bool]:
         """Translate Japanese text to English.
 
@@ -177,10 +204,19 @@ class Translator:
         Returns:
             Tuple of (translated English text, was_cached).
         """
+       
+        #logger.debug("text: " + str(text))
+        #text = self._strip_ascii_chars(text)
+        #logger.debug("stripped text: " + str(text))
+        
         if not text or not text.strip():
             return "", False
-
+                
         # Check cache first (includes fuzzy matching)
+        #cached = self._cache.get(self._strip_ascii_chars(text))
+        #logger.debug("stripped: " + self._strip_ascii_chars(text))
+        #if cached is not None:
+        #    return cached, True
         cached = self._cache.get(text)
         if cached is not None:
             return cached, True

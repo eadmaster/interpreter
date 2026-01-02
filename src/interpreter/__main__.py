@@ -110,6 +110,12 @@ def _parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Disable capture thread entirely (for testing if capture causes stuttering)"
     )
+    parser.add_argument(
+        "--cache-file",
+        type=str,
+        default=None,
+        help="Path to the translation cache file"
+    )
 
     return parser.parse_args()
 
@@ -211,7 +217,10 @@ def _initialize_components(
     # Initialize and load translator
     translator = None
     if not args.no_translate:
-        translator = Translator()
+        if args.cache_file:
+            translator = Translator(cache_file=args.cache_file)
+        else:
+            translator = Translator()
         translator.load()
     else:
         logger.info("translator disabled")
