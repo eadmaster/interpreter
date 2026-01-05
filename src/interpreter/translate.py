@@ -82,9 +82,11 @@ class TranslationCache:
                 csv_file.seek(0)
                 csv_file_reader = csv.reader(csv_file, dialect=csv_sniffer)
                 for curr_row in csv_file_reader:
+                    if len(curr_row) < 2:
+                        continue
                     #logger.debug(curr_row[0])
                     #logger.debug(curr_row[1])
-                    self.put(curr_row[0], curr_row[1])
+                    self.put(self._normalize_for_hash(curr_row[0]), ">"+curr_row[1])
                 # end for
                 logger.info("loaded %d entries in translation cache" % (len(self._cache)))
 
@@ -100,13 +102,26 @@ class TranslationCache:
         # Try exact match first
         if text in self._cache:
             return self._cache[text]
+        
+        # Try normalized
+        logger.info("original: " + text)
+        text = self._normalize_for_hash(text)
+        logger.info("normalized: " + text)
+        if text in self._cache:
+            return self._cache[text]
 
         # Try fuzzy match
+        prev_cached_text = ""
         for cached_text, translation in self._cache.items():
             if text_similarity(text, cached_text) >= self._similarity_threshold:
                 return translation
             #if text in cached_text:  # is a substring
             #    return translation
+            # combine with prev string
+            if text_similarity(text, prev_cached_text+cached_text) >= self._similarity_threshold:
+                #logger.info("combined match: " + prev_cached_text+cached_text)
+                return translation
+            prev_cached_text = cached_text
 
         return None
 
@@ -124,6 +139,62 @@ class TranslationCache:
 
         self._cache[text] = translation
 
+    def _normalize_for_hash(self, text: str) -> str :
+        import re
+        import unicodedata
+        
+        if not text:
+            return ""
+        
+        # NFKC Normalization (Handles Full-width/Half-width and basic compositions)
+        text = unicodedata.normalize('NFKC', text)
+        
+        # Decompose to separate Dakuten (NFD)
+        text = unicodedata.normalize('NFD', text)
+        
+        # Remove Dakuten/Handakuten (U+3099, U+309A)
+        text = re.sub(r'[\u3099\u309A]', '', text)
+        
+        # Small Kana to Large Kana Mapping
+        small_to_large = str.maketrans(
+            'ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ',
+            'あいうえおつやゆよわアイウエオツヤユヨワカケ'
+        )
+        text = text.translate(small_to_large)
+        
+        # Visual Lookalike Mapping (Fuzzy Canonicalization)
+        lookalike_map = str.maketrans({
+            '二': 'ニ',  # Kanji Two -> Katakana Ni
+            '工': 'エ',  # Kanji Work -> Katakana E
+            '口': 'ロ',  # Kanji Mouth -> Katakana Ro
+            '一': 'ー',  # Kanji One -> Long Vowel Mark
+            '|': '1',   # Pipe -> One
+            'l': '1',   # Lowercase L -> One
+            'O': '0',   # Letter O -> Zero
+            '入': '人',  # Enter -> Person
+            '士': '土',  # Warrior -> Soil
+            '末': '未',  # End -> Not yet
+            '干': '千',  # Dry -> 1000
+            '自': '白',  # Self -> White
+            '曰': '日',  # Say -> Sun
+        })
+        text = text.translate(lookalike_map)
+        
+        # Remove all Punctuation, Spaces, and Symbols
+        # Keeps: Hiragana, Katakana, Kanji, and Alpha-numeric
+        #text = re.sub(r'[^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF0-9a-zA-Z]', '', text)
+        # FINAL CLEANING: Keep ONLY Alphanumeric, Kanji, Hiragana, and Katakana.
+        # This explicitly removes '.' and '・' and any other symbols/punctuation.
+        # Range breakdown:
+        # 0-9a-zA-Z : Standard Alphanumeric
+        # \u3040-\u309F : Hiragana
+        # \u30A0-\u30FF : Katakana
+        # \u4E00-\u9FFF : Kanji
+        text = re.sub(r'[^0-9a-zA-Z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', '', text)
+    
+        return text
+        
+        
 
 class Translator:
     """Translates Japanese text to English using Sugoi V4 (CTranslate2)."""
@@ -187,13 +258,6 @@ class Translator:
         device_info = "GPU" if device == "cuda" else "CPU"
         logger.info("sugoi v4 ready", device=device_info)
 
-    
-    def _strip_ascii_chars(self, text: str) -> str:
-        non_ascii_pattern = r'[^\x00-\x7F]+'
-        import re
-        matches = re.findall(non_ascii_pattern, text)
-        return "".join(matches)
-        
         
     def translate(self, text: str) -> tuple[str, bool]:
         """Translate Japanese text to English.
@@ -204,19 +268,15 @@ class Translator:
         Returns:
             Tuple of (translated English text, was_cached).
         """
-       
-        #logger.debug("text: " + str(text))
-        #text = self._strip_ascii_chars(text)
-        #logger.debug("stripped text: " + str(text))
         
         if not text or not text.strip():
             return "", False
+        
+        # skip lines with only ascii chars
+        if text.isascii():
+            return "", False
                 
         # Check cache first (includes fuzzy matching)
-        #cached = self._cache.get(self._strip_ascii_chars(text))
-        #logger.debug("stripped: " + self._strip_ascii_chars(text))
-        #if cached is not None:
-        #    return cached, True
         cached = self._cache.get(text)
         if cached is not None:
             return cached, True
